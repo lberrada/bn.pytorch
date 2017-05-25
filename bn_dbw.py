@@ -23,9 +23,16 @@ def fun(gxhat, xhat, std):
     N, _, D1, D2 = xhat.size()
     K = N * D1 * D2
     gx = 1. / (K * std)
-    gx *= (K * gxhat - sum_(gxhat, axis=(0, 2, 3)).view(1, -1, 1, 1).expand_as(xhat) -
-           xhat * sum_(xhat * gxhat, axis=(0, 2, 3)).view(1, -1, 1, 1).expand_as(xhat))
+    gx *= (K * gxhat - view_expand_as(sum_(gxhat, axis=(0, 2, 3)), xhat) -
+           xhat * view_expand_as(sum_(xhat * gxhat, axis=(0, 2, 3)), xhat))
     return gx
+
+
+def view_expand_as(tensor, x):
+    view_sizes = [1 for _ in range(x.dim())]
+    view_sizes[1] = -1
+    res = tensor.view(*view_sizes).expand_as(x)
+    return res
 
 
 class BNpy:
@@ -40,18 +47,18 @@ class BNpy:
         self.momentum = momentum
         self.affine = affine
 
-    def forward(self, x):
+    def forward(self, i):
 
-        x = to_tensor(x)
+        i = to_tensor(i)
 
-        xx = x.transpose(1, 3).contiguous().view(-1, x.size(1))
-        mean = xx.mean(0)
+        ii = i.transpose(1, 3).contiguous().view(-1, i.size(1))
+        mean = ii.mean(0)
         # computing inverse of Bessel correction
-        bessel_inv = np.sqrt((len(xx) - 1.) / len(xx))
-        std = xx.std(0) * bessel_inv
+        bessel_inv = np.sqrt((len(ii) - 1.) / len(ii))
+        std = ii.std(0) * bessel_inv
 
-        # save for backward
-        self.x = x.clone()
+        # save for backward (clones might be unnecessary)
+        self.i = i.clone()
         self._save_mean = mean.clone()
         self._save_std = std.clone()
 
@@ -60,50 +67,50 @@ class BNpy:
         beta = self.bias - mean * alpha
 
         # expand to correct size
-        alpha = alpha.view(1, -1, 1, 1).expand_as(x)
-        beta = beta.view(1, -1, 1, 1).expand_as(x)
+        alpha = view_expand_as(alpha, i)
+        beta = view_expand_as(beta, i)
 
         # compute output
-        output = alpha * x + beta
+        o = alpha * i + beta
 
-        return output
+        return o
 
-    def backward(self, g_y):
+    def backward(self, g_o):
 
-        g_y = to_tensor(g_y)
+        g_o = to_tensor(g_o)
         # save for double backward
-        self.g_y = g_y.clone()
+        self.g_o = g_o.clone()
 
         # recompute xhat
         alpha = 1. / (self._save_std + self.eps)
         beta = - self._save_mean * alpha
-        alpha = alpha.view(1, -1, 1, 1).expand_as(self.x)
-        beta = beta.view(1, -1, 1, 1).expand_as(self.x)
-        xhat = alpha * self.x + beta
-
-        # rexpand save_mean
-        self._save_mean = self._save_mean.view(1, -1, 1, 1).expand_as(g_y)
-        self._save_std = self._save_std.view(1, -1, 1, 1).expand_as(g_y)
+        alpha = view_expand_as(alpha, self.i)
+        beta = view_expand_as(beta, self.i)
+        xhat = alpha * self.i + beta
 
         # intermediate partial derivatives
-        g_xhat = g_y * self.weight.view(1, -1, 1, 1).expand_as(self.x)
+        g_xhat = g_o * view_expand_as(self.weight, self.i)
 
         # final partial derivatives
-        g_x = fun(g_xhat, xhat, self._save_std)
-        g_weight = sum_(xhat * g_y, axis=(0, 2, 3))
-        g_bias = sum_(g_y, axis=(0, 2, 3))
+        g_i = fun(g_xhat, xhat, view_expand_as(self._save_std, self.i))
+        g_w = sum_(xhat * g_o, axis=(0, 2, 3))
+        g_b = sum_(g_o, axis=(0, 2, 3))
 
-        return g_x, g_weight, g_bias
+        return g_i, g_w, g_b
 
-    def backwardbackward(self, gg_x, gg_weight, gg_bias):
+    def backwardbackward(self, gg_x, gg_w):
 
         # recompute xhat
-        xhat = (self.x - self._save_mean) / (self._save_std + self.eps)
+        alpha = 1. / (self._save_std + self.eps)
+        beta = - self._save_mean * alpha
+        alpha = view_expand_as(alpha, self.i)
+        beta = view_expand_as(beta, self.i)
+        xhat = alpha * self.i + beta
 
-        gg_xhat = fun(gg_x, xhat, self._save_std)
-        gg_o = gg_xhat * self.weight.view(1, -1, 1, 1).expand_as(self.x)
+        gg_xhat = fun(gg_x, xhat, view_expand_as(self._save_std, self.i))
+        gg_o = gg_xhat * view_expand_as(self.weight, self.i)
 
-        g_x = gg_weight.view(1, -1, 1, 1).expand_as(self.x) * self.g_x
-        g_weight = sum_(gg_xhat * self.g_y)
+        g_i = view_expand_as(gg_w, self.i) * self.g_o
+        g_w = sum_(gg_xhat * self.g_o, axis=(0, 2, 3))
 
-        return gg_o, g_x, g_weight
+        return gg_o, g_i, g_w

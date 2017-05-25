@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import unittest
 
-from torch.autograd import Variable, gradcheck
+from torch.autograd import Variable, gradcheck, grad
 from bn_autograd import BatchNorm2d
 from bn_dbw import BNpy
 
@@ -125,22 +125,27 @@ class TestBN2d(unittest.TestCase):
 
     def backwardbackward(self):
 
-        inp_ref = Variable(self.inp, requires_grad=True)
-        grad_output = torch.randn(self.inp.size())
+        g_o = torch.randn(self.inp.size())
+        gg_i = torch.randn(self.inp.size())
+        gg_w = torch.randn(self.weight.size())
 
-        self.bn_ref(inp_ref).backward(grad_output)
+        inp_tst = Variable(self.inp, requires_grad=True)
+        _ = self.bn_py.forward(self.inp)
+        _, _, _ = self.bn_py.backward(g_o)
+        gg_o_py, g_i_py, g_w_py = self.bn_py.backwardbackward(gg_i, gg_w)
 
-        grad_i_ref = inp_ref.grad.clone()
+        out_tst = self.bn_tst(inp_tst)
+        w_tst = self.bn_tst.weight
+        g_o = Variable(g_o, requires_grad=True)
+        g_w_sym, g_i_sym = grad(out_tst, (w_tst, inp_tst,), (g_o,),
+                                retain_graph=True, create_graph=True)
+        gg_o_tst, g_i_tst, g_w_tst = grad((g_i_sym, g_w_sym),
+                                          (g_o, inp_tst, w_tst),
+                                          (gg_i, gg_w))
 
-        grad_w_ref = self.bn_ref.weight.grad.clone()
-
-        grad_b_ref = self.bn_ref.bias.grad.clone()
-
-        self.bn_py.forward(self.inp)
-        grad_i_py, grad_w_py, grad_b_py = self.bn_py.backward(grad_output)
-        assert_all_close(grad_w_ref, grad_w_py)
-        assert_all_close(grad_b_ref, grad_b_py)
-        assert_all_close(grad_i_ref, grad_i_py)
+        assert_all_close(gg_o_tst, gg_o_py)
+        assert_all_close(g_i_tst, g_i_py)
+        assert_all_close(g_w_tst, g_w_py)
 
     def test_forward_train(self):
         self.bn_ref.train()
