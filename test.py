@@ -56,6 +56,7 @@ class TestBN2d(unittest.TestCase):
 
     def setUp(self):
 
+        torch.manual_seed(1234)
         self.inp_size = (5, 6, 7, 8)
         self.inp = torch.randn(self.inp_size)
         self.weight = torch.randn(self.inp_size[1])
@@ -97,19 +98,49 @@ class TestBN2d(unittest.TestCase):
 
         inp_ref = Variable(self.inp, requires_grad=True)
         inp_tst = Variable(self.inp, requires_grad=True)
+        grad_output = torch.randn(self.inp.size())
 
-        self.bn_ref(inp_ref).sum().backward()
-        self.bn_tst(inp_tst).sum().backward()
+        self.bn_ref(inp_ref).backward(grad_output)
+        self.bn_tst(inp_tst).backward(grad_output)
 
-        grad_ref = inp_ref.grad.clone()
-        grad_tst = inp_tst.grad.clone()
+        grad_i_ref = inp_ref.grad.clone()
+        grad_i_tst = inp_tst.grad.clone()
 
-        assert_all_close(grad_ref, grad_tst)
+        grad_w_ref = self.bn_ref.weight.grad.clone()
+        grad_w_tst = self.bn_tst.weight.grad.clone()
+
+        grad_b_ref = self.bn_ref.bias.grad.clone()
+        grad_b_tst = self.bn_tst.bias.grad.clone()
+
+        assert_all_close(grad_i_ref, grad_i_tst)
+        assert_all_close(grad_w_ref, grad_w_tst)
+        assert_all_close(grad_b_ref, grad_b_tst)
 
         if self.bn_ref.training:
             self.bn_py.forward(self.inp)
-            grad_py, _, _ = self.bn_py.backward(self.inp)
-            assert_all_close(grad_ref, grad_py)
+            grad_i_py, grad_w_py, grad_b_py = self.bn_py.backward(grad_output)
+            assert_all_close(grad_w_ref, grad_w_py)
+            assert_all_close(grad_b_ref, grad_b_py)
+            assert_all_close(grad_i_ref, grad_i_py)
+
+    def backwardbackward(self):
+
+        inp_ref = Variable(self.inp, requires_grad=True)
+        grad_output = torch.randn(self.inp.size())
+
+        self.bn_ref(inp_ref).backward(grad_output)
+
+        grad_i_ref = inp_ref.grad.clone()
+
+        grad_w_ref = self.bn_ref.weight.grad.clone()
+
+        grad_b_ref = self.bn_ref.bias.grad.clone()
+
+        self.bn_py.forward(self.inp)
+        grad_i_py, grad_w_py, grad_b_py = self.bn_py.backward(grad_output)
+        assert_all_close(grad_w_ref, grad_w_py)
+        assert_all_close(grad_b_ref, grad_b_py)
+        assert_all_close(grad_i_ref, grad_i_py)
 
     def test_forward_train(self):
         self.bn_ref.train()
@@ -134,3 +165,8 @@ class TestBN2d(unittest.TestCase):
         self.bn_tst.eval()
 
         self.backward()
+
+    def test_backwardbackward_train(self):
+        self.bn_ref.train()
+
+        self.backwardbackward()
