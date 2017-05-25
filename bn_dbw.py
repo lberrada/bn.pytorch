@@ -78,8 +78,6 @@ class BNpy:
     def backward(self, g_o):
 
         g_o = to_tensor(g_o)
-        # save for double backward
-        self.g_o = g_o.clone()
 
         # recompute xhat
         alpha = 1. / (self._save_std + self.eps)
@@ -96,6 +94,10 @@ class BNpy:
         g_w = sum_(xhat * g_o, axis=(0, 2, 3))
         g_b = sum_(g_o, axis=(0, 2, 3))
 
+        # save for double backward
+        self.g_o = g_o.clone()
+        self.g_xhat = g_xhat.clone()
+
         return g_i, g_w, g_b
 
     def backwardbackward(self, gg_x, gg_w):
@@ -107,10 +109,21 @@ class BNpy:
         beta = view_expand_as(beta, self.i)
         xhat = alpha * self.i + beta
 
+        # gg_xhat = d(L_tilde) / d(g_xhat)
         gg_xhat = fun(gg_x, xhat, view_expand_as(self._save_std, self.i))
+        # gg_o = d(L_tilde) / d(g_o)
         gg_o = gg_xhat * view_expand_as(self.weight, self.i)
 
-        g_i = view_expand_as(gg_w, self.i) * self.g_o
+        # g_xhat = d(L_tilde) / d(xhat)
+        # NB: different from self.g_xhat = d(L) / d(xhat)
+        N, _, D1, D2 = self.i.size()
+        K = view_expand_as(1. / (N * D1 * D2 * self._save_std), self.i)
+        g_xhat = -K * (gg_x * view_expand_as(sum_(xhat * self.g_xhat, axis=(0, 2, 3)), self.i) +
+                       xhat * view_expand_as(sum_(gg_x * self.g_xhat, axis=(0, 2, 3)), self.i))
+
+        # g_i = d(L_tilde) / d(i)
+        g_i = fun(g_xhat, xhat, view_expand_as(self._save_std, self.i))
+        # g_w = d(L_tilde) / d(w)
         g_w = sum_(gg_xhat * self.g_o, axis=(0, 2, 3))
 
         return gg_o, g_i, g_w
